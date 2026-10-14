@@ -195,3 +195,16 @@ main {
 .dep-row .dep-res.skip { color: var(--muted); }
 .succ-btns { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .r-meta .succ { color: var(--muted); }
+
+/* 분류 */
+input[type=color] { width: 40px; height: 38px; padding: 3px; flex-shrink: 0; }
+.new-cat { display: flex; gap: 6px; align-items: center; }
+.new-cat #e-newcat-name { flex: 1; }
+.cat-head { font-size: 12.5px; font-weight: 700; color: var(--muted); margin: 12px 0 4px; }
+.cat-row { display: flex; gap: 6px; align-items: center; padding: 5px 0; border-bottom: 1px solid var(--line); }
+.cat-row .cat-name { flex: 1; min-width: 0; }
+.cat-row select { font-size: 13px; padding: 7px 4px; width: 78px; }
+.cat-row .cat-count { font-size: 12px; color: var(--muted); width: 30px; text-align: right; }
+.cat-row .cat-del { border: 0; background: none; color: var(--high); font-size: 13px; padding: 4px; }
+.cat-add { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+.cat-add #cat-add-name { flex: 1; min-width: 120px; }

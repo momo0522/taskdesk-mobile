@@ -43,6 +43,32 @@ function ensureCategory(name, space) {
   state.categories.push({ name, color: PALETTE[state.categories.length % PALETTE.length], space: space || 'work' });
 }
 
+function saveCategory({ oldName, name, color, space }) {
+  name = (name || '').trim();
+  if (!name) return '분류 이름을 입력하세요.';
+  if (name !== oldName && state.categories.some((c) => c.name === name)) return '이미 있는 분류예요.';
+  const cat = oldName ? state.categories.find((c) => c.name === oldName) : null;
+  if (cat) {
+    cat.name = name;
+    if (color) cat.color = color;
+    state.tasks.forEach((t) => { if (t.project === oldName) t.project = name; });
+    if (space && space !== (cat.space || 'work')) {
+      cat.space = space;
+      state.tasks.forEach((t) => { if (t.project === name) t.space = space; });
+    }
+  } else {
+    state.categories.push({ name, color: color || PALETTE[state.categories.length % PALETTE.length], space: space || 'work' });
+  }
+  changed();
+  return '';
+}
+
+function deleteCategory(name) {
+  state.categories = state.categories.filter((c) => c.name !== name);
+  state.tasks.forEach((t) => { if (t.project === name) t.project = ''; });
+  changed();
+}
+
 function upsertTask(input) {
   const now = new Date().toISOString();
   let t = input.id && state.tasks.find((x) => x.id === input.id);
@@ -262,6 +288,7 @@ function renderMemo() {
 
 function renderSettings() {
   if (!cloud) return;
+  renderCategories();
   $('#s-email').textContent = (cloud.session && cloud.session.email) || '-';
   const last = LS.get('td_last', '');
   $('#s-sync').textContent = last ? `마지막 동기화: ${fmtAgo(last)}` : '아직 동기화 전이에요.';
@@ -313,8 +340,93 @@ function fillCategories(space, selected) {
   const names = state.categories.filter((c) => (c.space || 'work') === space).map((c) => c.name);
   names.forEach((n) => add(n, n));
   if (selected && !names.includes(selected)) add(selected, selected);
+  add('__new__', '＋ 새 분류 추가…');
   sel.value = selected || '';
+  sel.dataset.prev = sel.value;
 }
+
+$('#e-project').addEventListener('change', (e) => {
+  if (e.target.value !== '__new__') { e.target.dataset.prev = e.target.value; return; }
+  e.target.value = e.target.dataset.prev || '';
+  $('#e-newcat').classList.remove('hidden');
+  $('#e-newcat-color').value = PALETTE[state.categories.length % PALETTE.length];
+  $('#e-newcat-name').value = '';
+  $('#e-newcat-name').focus();
+});
+
+function addCategoryFromEditor() {
+  const name = $('#e-newcat-name').value.trim();
+  const err = saveCategory({ name, color: $('#e-newcat-color').value, space: editing.space || 'work' });
+  if (err) { toast(err); return; }
+  fillCategories(editing.space || 'work', name);
+  $('#e-newcat').classList.add('hidden');
+  toast(`분류 "${name}"을(를) 만들었어요.`);
+}
+$('#e-newcat-add').addEventListener('click', addCategoryFromEditor);
+$('#e-newcat-cancel').addEventListener('click', () => $('#e-newcat').classList.add('hidden'));
+$('#e-newcat-name').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); addCategoryFromEditor(); }
+});
+
+// ---------- 설정: 분류 관리 ----------
+function renderCategories() {
+  const box = $('#cat-list');
+  if (box.contains(document.activeElement)) return; // 입력 중이면 다시 그리지 않음
+  box.innerHTML = '';
+  for (const space of ['work', 'personal']) {
+    const cats = state.categories.filter((c) => (c.space || 'work') === space);
+    const head = document.createElement('div');
+    head.className = 'cat-head';
+    head.textContent = `${SPACE_LABEL[space]} 분류 (${cats.length})`;
+    box.append(head);
+    for (const c of cats) {
+      const n = state.tasks.filter((t) => t.project === c.name).length;
+      const row = document.createElement('div');
+      row.className = 'cat-row';
+      const color = document.createElement('input');
+      color.type = 'color';
+      color.value = c.color || '#6b7385';
+      color.addEventListener('change', () => saveCategory({ oldName: c.name, name: c.name, color: color.value }));
+      const name = document.createElement('input');
+      name.className = 'cat-name';
+      name.value = c.name;
+      name.addEventListener('change', () => {
+        const err = saveCategory({ oldName: c.name, name: name.value, color: c.color });
+        if (err) { toast(err); name.value = c.name; } else toast(n ? `이름을 바꾸고 업무 ${n}건에 반영했어요.` : '이름을 바꿨어요.');
+      });
+      const sp = document.createElement('select');
+      for (const [v, label] of Object.entries(SPACE_LABEL)) {
+        const o = document.createElement('option'); o.value = v; o.textContent = label; sp.append(o);
+      }
+      sp.value = space;
+      sp.addEventListener('change', () => {
+        saveCategory({ oldName: c.name, name: c.name, color: c.color, space: sp.value });
+        toast(`"${c.name}"을(를) ${SPACE_LABEL[sp.value]}(으)로 옮겼어요.`);
+      });
+      const count = document.createElement('span');
+      count.className = 'cat-count';
+      count.textContent = `${n}건`;
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'cat-del';
+      del.textContent = '삭제';
+      del.addEventListener('click', () => {
+        const msg = n ? `"${c.name}" 분류를 삭제할까요?\n이 분류의 업무 ${n}건은 미분류가 돼요.` : `"${c.name}" 분류를 삭제할까요?`;
+        if (confirm(msg)) deleteCategory(c.name);
+      });
+      row.append(color, name, sp, count, del);
+      box.append(row);
+    }
+  }
+}
+
+$('#cat-add').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const err = saveCategory({ name: $('#cat-add-name').value, color: $('#cat-add-color').value, space: $('#cat-add-space').value });
+  if (err) { toast(err); return; }
+  $('#cat-add-name').value = '';
+  $('#cat-add-color').value = PALETTE[state.categories.length % PALETTE.length];
+});
 
 function setEditSpace(space) {
   editing.space = space;
@@ -448,6 +560,7 @@ function openEditor(id, preset = {}, inPlace = false) {
   fillCategories(editing.space || 'work', editing.project);
   editSubs = structuredClone(editing.checklist || []);
   renderSubs();
+  $('#e-newcat').classList.add('hidden');
   editDeps = [...(editing.dependsOn || [])];
   editCond = structuredClone(editing.depCond || {});
   renderDeps();
@@ -502,7 +615,7 @@ $('#sheet').addEventListener('submit', (e) => {
   const data = {
     title: f.title.value.trim(),
     space: editing.space || 'work',
-    project: f.project.value,
+    project: f.project.value === '__new__' ? '' : f.project.value,
     status: f.status.value,
     dueDate: f.dueDate.value,
     dueTime: f.dueTime.value,

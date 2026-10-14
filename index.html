@@ -83,6 +83,20 @@
           </div>
         </div>
         <div class="card">
+          <h3>분류 관리</h3>
+          <p class="muted small">이름을 바꾸면 그 분류의 업무에도 반영되고, 공간을 바꾸면 업무도 함께 옮겨가요.</p>
+          <div id="cat-list"></div>
+          <form class="cat-add" id="cat-add">
+            <input type="color" id="cat-add-color" value="#4f63f0" />
+            <input id="cat-add-name" placeholder="새 분류 이름" autocomplete="off" />
+            <select id="cat-add-space">
+              <option value="work">💼 회사</option>
+              <option value="personal">🏠 개인</option>
+            </select>
+            <button class="btn primary" type="submit">추가</button>
+          </form>
+        </div>
+        <div class="card">
           <h3>알림</h3>
           <p class="muted" id="s-push-state"></p>
           <div class="btns"><button class="btn primary" id="s-push">이 휴대폰에서 알림 받기</button></div>
@@ -119,7 +133,7 @@
       </div>
       <label>제목<input name="title" required autocomplete="off" /></label>
       <div class="grid2">
-        <label>분류<select name="project"></select></label>
+        <label>분류<select name="project" id="e-project"></select></label>
         <label>상태
           <select name="status">
             <option value="todo">할 일</option>
@@ -127,6 +141,12 @@
             <option value="done">완료</option>
           </select>
         </label>
+      </div>
+      <div class="new-cat hidden" id="e-newcat">
+        <input type="color" id="e-newcat-color" value="#4f63f0" />
+        <input id="e-newcat-name" placeholder="새 분류 이름" autocomplete="off" />
+        <button type="button" class="btn small primary" id="e-newcat-add">추가</button>
+        <button type="button" class="btn small" id="e-newcat-cancel">취소</button>
       </div>
       <div class="grid2">
         <label>마감일<input type="date" name="dueDate" /></label>

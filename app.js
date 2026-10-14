@@ -2,7 +2,10 @@
 // 날짜/빠른 추가/조건 표시 등은 PC와 같은 common.js를 쓰고, 저장은 sync.js로 서버와 맞춘다.
 /* global CLOUD_CONFIG */
 
-let state = { tasks: [], categories: [], notes: [], settings: { viewSpace: 'all' } };
+let state = { tasks: [], events: [], categories: [], notes: [], settings: { viewSpace: 'all' } };
+let calMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+let calSel = ymd(new Date());
+let editingEvent = null;
 let meta = { cursor: null, known: {} };
 let cloud = null;
 let tab = 'today';
@@ -24,7 +27,7 @@ const LS = {
 };
 
 function persist() {
-  LS.set('td_data', { tasks: state.tasks, categories: state.categories, notes: state.notes });
+  LS.set('td_data', { tasks: state.tasks, events: state.events, categories: state.categories, notes: state.notes });
   LS.set('td_meta', meta);
   LS.set('td_view', state.settings.viewSpace);
 }
@@ -115,6 +118,24 @@ window.api = {
   },
   async deleteNote(id) { state.notes = state.notes.filter((n) => n.id !== id); changed(); },
   async openMain(id) { if (id) openEditor(id); },
+  async saveEvent(input) {
+    const now = new Date().toISOString();
+    state.events = state.events || [];
+    let ev = input.id && state.events.find((x) => x.id === input.id);
+    if (ev) Object.assign(ev, input, { updatedAt: now });
+    else {
+      ev = {
+        title: '', date: ymd(new Date()), endDate: '', allDay: true, startTime: '', endTime: '', location: '', memo: '',
+        space: 'work', project: '', remindBefore: 10, repeat: 'none', repeatUntil: '', createdAt: now, ...input,
+        id: Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
+      };
+      state.events.push(ev);
+    }
+    ensureCategory(ev.project, ev.space);
+    changed();
+    return ev;
+  },
+  async deleteEvent(id) { state.events = (state.events || []).filter((e) => e.id !== id); changed(); },
 };
 
 // ---------- 동기화 ----------
@@ -214,6 +235,118 @@ function taskRow(t) {
   });
 }
 
+function eventRow(ev) {
+  const el = document.createElement('div');
+  el.className = `row${spaceOf(ev) === 'personal' ? ' personal' : ''}`;
+  el.style.borderLeftColor = evColor(ev);
+  const time = document.createElement('div');
+  time.className = `ev-time${ev.allDay || !ev.startTime ? ' allday' : ''}`;
+  time.textContent = evTimeLabel(ev);
+  const main = document.createElement('div');
+  main.className = 'r-main';
+  const t = document.createElement('div');
+  t.className = 'r-title';
+  t.textContent = ev.title;
+  const m = document.createElement('div');
+  m.className = 'r-meta';
+  const items = [
+    [viewSpace() === 'all' && spaceOf(ev) === 'personal' ? '🏠' : ''],
+    [ev.location ? `📍 ${ev.location}` : ''],
+    [ev.project, 'tag', catColor(ev.project)],
+    [ev.repeat && ev.repeat !== 'none' ? `🔁 ${EVENT_REPEAT[ev.repeat]}` : ''],
+  ];
+  for (const it of items) {
+    if (!it[0]) continue;
+    const s = document.createElement('span');
+    s.textContent = it[0];
+    if (it[1]) s.className = it[1];
+    if (it[2]) s.style.setProperty('--c', it[2]);
+    m.append(s);
+  }
+  main.append(t, m);
+  el.append(time, main);
+  el.addEventListener('click', () => openEventEditor(ev.id));
+  return el;
+}
+
+// ---------- 캘린더 ----------
+function renderCal() {
+  const y = calMonth.getFullYear();
+  const mo = calMonth.getMonth();
+  $('#mc-title').textContent = `${y}년 ${mo + 1}월`;
+  const first = new Date(y, mo, 1);
+  const days = new Date(y, mo + 1, 0).getDate();
+  const rows = Math.ceil((first.getDay() + days) / 7);
+  const start = addDays(first, -first.getDay());
+  const today = ymd(new Date());
+  const evs = (state.events || []).filter(inView);
+  const tasks = vt().filter((t) => t.dueDate && t.status !== 'done');
+  const box = $('#mcal');
+  box.innerHTML = '';
+  WD.forEach((w, i) => {
+    const h = document.createElement('div');
+    h.className = `wd${i === 0 ? ' sun' : i === 6 ? ' sat' : ''}`;
+    h.textContent = w;
+    box.append(h);
+  });
+  for (let i = 0; i < rows * 7; i++) {
+    const d = addDays(start, i);
+    const ds = ymd(d);
+    const c = document.createElement('div');
+    c.className = `c${d.getMonth() !== mo ? ' other' : ''}${ds === today ? ' today' : ''}${ds === calSel ? ' sel' : ''}${d.getDay() === 0 ? ' sun' : d.getDay() === 6 ? ' sat' : ''}`;
+    const n = document.createElement('div');
+    n.className = 'n';
+    n.textContent = d.getDate();
+    c.append(n);
+    const chips = [];
+    for (const { ev } of eventsOn(ds, evs)) {
+      const ch = document.createElement('div');
+      ch.className = 'chip';
+      ch.style.setProperty('--c', evColor(ev));
+      ch.textContent = ev.title;
+      chips.push(ch);
+    }
+    for (const t of tasks.filter((x) => x.dueDate === ds)) {
+      const ch = document.createElement('div');
+      ch.className = 'chip task';
+      ch.textContent = t.title;
+      chips.push(ch);
+    }
+    chips.slice(0, 2).forEach((ch) => c.append(ch));
+    if (chips.length > 2) {
+      const more = document.createElement('div');
+      more.className = 'more';
+      more.textContent = `+${chips.length - 2}`;
+      c.append(more);
+    }
+    c.addEventListener('click', () => { calSel = ds; renderCal(); });
+    box.append(c);
+  }
+  // 선택한 날 목록
+  const sd = parseYmd(calSel);
+  $('#mday-title').textContent = `${sd.getMonth() + 1}월 ${sd.getDate()}일 (${WD[sd.getDay()]})`;
+  const day = $('#mday');
+  day.innerHTML = '';
+  const dayEvs = eventsOn(calSel, evs);
+  const dayTasks = vt().filter((t) => t.dueDate === calSel).sort(byTime);
+  if (!dayEvs.length && !dayTasks.length) {
+    day.innerHTML = '<div class="empty">일정과 할 일이 없어요.</div>';
+    return;
+  }
+  if (dayEvs.length) { sec(day, `📅 일정 ${dayEvs.length}`); dayEvs.forEach(({ ev }) => day.append(eventRow(ev))); }
+  if (dayTasks.length) { sec(day, `✓ 마감 할 일 ${dayTasks.length}`); dayTasks.forEach((t) => day.append(taskRow(t))); }
+}
+
+$('#mc-prev').addEventListener('click', () => { calMonth = new Date(calMonth.getFullYear(), calMonth.getMonth() - 1, 1); renderCal(); });
+$('#mc-next').addEventListener('click', () => { calMonth = new Date(calMonth.getFullYear(), calMonth.getMonth() + 1, 1); renderCal(); });
+$('#mc-today').addEventListener('click', () => {
+  const n = new Date();
+  calMonth = new Date(n.getFullYear(), n.getMonth(), 1);
+  calSel = ymd(n);
+  renderCal();
+});
+$('#mday-add').addEventListener('click', () => openEventEditor(null, { date: calSel }));
+
 function renderToday() {
   const now = new Date();
   const today = ymd(now);
@@ -233,6 +366,8 @@ function renderToday() {
   const box = $('#view-today');
   box.innerHTML = '';
   if (overdue.length) { sec(box, `⚠️ 지연 ${overdue.length}`, 'late'); overdue.forEach((t) => box.append(taskRow(t))); }
+  const evToday = eventsOn(today, (state.events || []).filter(inView));
+  if (evToday.length) { sec(box, `📅 오늘 일정 ${evToday.length}`); evToday.forEach(({ ev }) => box.append(eventRow(ev))); }
   sec(box, `📌 오늘 ${todays.length}`);
   todays.forEach((t) => box.append(taskRow(t)));
   if (subs.length) {
@@ -306,9 +441,10 @@ function render() {
   const d = new Date();
   $('#today-label').textContent = `${d.getMonth() + 1}월 ${d.getDate()}일 ${WD[d.getDay()]}요일`;
   $$('#space-switch button').forEach((b) => b.classList.toggle('active', b.dataset.space === viewSpace()));
-  $('#add-input').placeholder = viewSpace() === 'personal' ? '개인 일 추가 (예: 치과 예약 금요일 3시)' : '할 일 추가 (예: 견적 회신 내일 3시 #영업)';
-  $('#add-form').classList.toggle('hidden', !(tab === 'today' || tab === 'all'));
+  if (!addWhen || addWhen.kind() !== 'event') $('#add-input').placeholder = viewSpace() === 'personal' ? '개인 일 추가 (예: 치과 예약 금요일 3시)' : '할 일 추가 (예: 견적 회신 내일 3시 #영업)';
+  $('#add-form').classList.toggle('hidden', !(tab === 'today' || tab === 'all' || tab === 'calendar'));
   if (tab === 'today') renderToday();
+  if (tab === 'calendar') renderCal();
   if (tab === 'all') renderAll();
   if (tab === 'memo') renderMemo();
   if (tab === 'settings') renderSettings();
@@ -551,6 +687,7 @@ $$('#e-succ-btns [data-succ]').forEach((b) => b.addEventListener('click', () => 
 }));
 
 function openEditor(id, preset = {}, inPlace = false) {
+  if (id && String(id).startsWith('ev:')) { openEventEditor(id.slice(3)); return; }
   const t = id ? state.tasks.find((x) => x.id === id) : null;
   if (id && !t) return;
   editing = t ? structuredClone(t) : { space: defaultSpace(), status: 'todo', priority: 'mid', remindBefore: 10, repeat: 'none', ...preset };
@@ -573,12 +710,105 @@ function openEditor(id, preset = {}, inPlace = false) {
 }
 
 function closeEditor(fromPop) {
-  if ($('#sheet').classList.contains('hidden')) return;
+  if ($('#sheet').classList.contains('hidden') && $('#evsheet').classList.contains('hidden')) return;
   $('#sheet').classList.add('hidden');
+  $('#evsheet').classList.add('hidden');
   $('#sheet-back').classList.add('hidden');
   editing = null;
+  editingEvent = null;
   if (!fromPop && history.state && history.state.sheet) history.back();
 }
+
+// ---------- 일정 편집 ----------
+function fillEventCategories(space, selected) {
+  const sel = $('#evsheet').elements.project;
+  sel.innerHTML = '';
+  const add = (v, label) => { const o = document.createElement('option'); o.value = v; o.textContent = label; sel.append(o); };
+  add('', '미분류');
+  const names = state.categories.filter((c) => (c.space || 'work') === space).map((c) => c.name);
+  names.forEach((n) => add(n, n));
+  if (selected && !names.includes(selected)) add(selected, selected);
+  sel.value = selected || '';
+}
+
+function setEventSpace(space) {
+  editingEvent.space = space;
+  $$('#v-space button').forEach((b) => b.classList.toggle('active', b.dataset.space === space));
+}
+
+function syncEventAllDay() {
+  const f = $('#evsheet').elements;
+  $('#v-times').classList.toggle('hidden', f.allDay.checked);
+}
+
+function openEventEditor(id, preset = {}) {
+  if ($('#sheet') && !$('#sheet').classList.contains('hidden')) closeEditor(true);
+  const ev = id ? (state.events || []).find((e) => e.id === id) : null;
+  if (id && !ev) return;
+  editingEvent = ev ? structuredClone(ev) : {
+    title: '', date: calSel || ymd(new Date()), endDate: '', allDay: false, startTime: '', endTime: '', location: '', memo: '',
+    space: defaultSpace(), project: '', remindBefore: 10, repeat: 'none', ...preset,
+  };
+  const f = $('#evsheet').elements;
+  for (const k of ['title', 'date', 'endDate', 'startTime', 'endTime', 'location', 'memo', 'repeat']) f[k].value = editingEvent[k] || (k === 'repeat' ? 'none' : '');
+  f.allDay.checked = !!editingEvent.allDay;
+  f.remindBefore.value = String(editingEvent.remindBefore ?? 10);
+  setEventSpace(editingEvent.space || 'work');
+  fillEventCategories(editingEvent.space || 'work', editingEvent.project);
+  syncEventAllDay();
+  $('#v-title').textContent = ev ? '일정 수정' : '새 일정';
+  $('#v-delete').classList.toggle('hidden', !ev);
+  $('#evsheet').classList.remove('hidden');
+  $('#sheet-back').classList.remove('hidden');
+  $('#evsheet .sheet-body').scrollTop = 0;
+  history.pushState({ sheet: true }, '');
+}
+
+$$('#v-space button').forEach((b) => b.addEventListener('click', () => {
+  const cur = $('#evsheet').elements.project.value;
+  setEventSpace(b.dataset.space);
+  const ok = state.categories.some((c) => c.name === cur && (c.space || 'work') === b.dataset.space);
+  fillEventCategories(b.dataset.space, ok ? cur : '');
+}));
+$('#evsheet').elements.allDay.addEventListener('change', syncEventAllDay);
+$('#evsheet').elements.startTime.addEventListener('change', () => {
+  const f = $('#evsheet').elements;
+  if (f.startTime.value && (!f.endTime.value || f.endTime.value <= f.startTime.value)) f.endTime.value = plusHour(f.startTime.value);
+});
+$('#v-cancel').addEventListener('click', () => closeEditor());
+$('#evsheet').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const f = e.target.elements;
+  const allDay = f.allDay.checked || !f.startTime.value;
+  const data = {
+    title: f.title.value.trim(),
+    date: f.date.value,
+    endDate: f.endDate.value && f.endDate.value > f.date.value ? f.endDate.value : '',
+    allDay,
+    startTime: allDay ? '' : f.startTime.value,
+    endTime: allDay ? '' : f.endTime.value,
+    location: f.location.value.trim(),
+    memo: f.memo.value,
+    remindBefore: Number(f.remindBefore.value),
+    repeat: f.repeat.value,
+    space: editingEvent.space || 'work',
+    project: f.project.value,
+  };
+  if (!data.title || !data.date) return;
+  if (f.endDate.value && f.endDate.value < f.date.value) { toast('종료일이 시작 날짜보다 빨라요.'); return; }
+  if (!allDay && data.endTime && !data.endDate && data.endTime <= data.startTime) { toast('종료 시각이 시작 시각보다 빨라요.'); return; }
+  if (editingEvent.id) data.id = editingEvent.id;
+  window.api.saveEvent(data);
+  closeEditor();
+  toast(`📅 일정 저장: ${data.title}`);
+});
+$('#v-delete').addEventListener('click', () => {
+  if (!editingEvent || !editingEvent.id) return;
+  const rep = editingEvent.repeat && editingEvent.repeat !== 'none';
+  if (!confirm(rep ? '이 반복 일정을 삭제할까요? 모든 회차가 삭제돼요.' : '이 일정을 삭제할까요?')) return;
+  window.api.deleteEvent(editingEvent.id);
+  closeEditor();
+});
 
 function addSubFromInputs() {
   const text = $('#e-sub-text').value.trim();
@@ -657,10 +887,17 @@ $('#add-form').addEventListener('submit', (e) => {
   const text = $('#add-input').value.trim();
   if (!text) return;
   const parsed = addWhen.apply(parseQuick(text));
-  window.api.saveTask({ ...parsed, space: parsed.space || defaultSpace() });
-  $('#add-input').value = '';
   const msg = $('#added');
-  msg.textContent = `✓ 추가됨: ${parsed.title} · ${whenLabel(parsed)}`;
+  if (addWhen.kind() === 'event' || parsed.kind === 'event') {
+    const ev = quickToEvent(parsed);
+    window.api.saveEvent(ev);
+    msg.textContent = `📅 일정 추가: ${ev.title} · ${evWhenLabel(ev)}`;
+  } else {
+    const { kind, endTime, ...task } = parsed;
+    window.api.saveTask({ ...task, space: task.space || defaultSpace() });
+    msg.textContent = `✓ 추가됨: ${task.title} · ${whenLabel(task)}`;
+  }
+  $('#add-input').value = '';
   msg.classList.remove('hidden');
   clearTimeout(msg._t);
   msg._t = setTimeout(() => msg.classList.add('hidden'), 3000);
@@ -689,7 +926,7 @@ $('#s-logout').addEventListener('click', () => {
   if (!confirm('로그아웃할까요? 이 휴대폰에 저장된 사본도 지워져요.')) return;
   cloud.signOut();
   meta = { cursor: null, known: {} };
-  state.tasks = []; state.categories = []; state.notes = [];
+  state.tasks = []; state.events = []; state.categories = []; state.notes = [];
   persist();
   LS.set('td_push', false);
   showLogin();
@@ -753,7 +990,7 @@ $('#login-form').addEventListener('submit', async (e) => {
   try {
     await cloud.signIn($('#l-email').value.trim(), $('#l-pass').value);
     meta = { cursor: null, known: {} };
-    state.tasks = []; state.categories = []; state.notes = [];
+    state.tasks = []; state.events = []; state.categories = []; state.notes = [];
     $('#l-pass').value = '';
     showApp();
     await runSync();
@@ -768,7 +1005,10 @@ function start() {
   if (data) Object.assign(state, data);
   meta = LS.get('td_meta', meta);
   state.settings.viewSpace = LS.get('td_view', 'all');
-  addWhen = createQuickWhen($('#add-when'));
+  addWhen = createQuickWhen($('#add-when'), {
+    kind: true,
+    onKind: (k) => { $('#add-input').placeholder = k === 'event' ? '일정 추가 (예: 팀 회의 내일 3시~4시)' : '할 일 추가 (예: 견적 회신 내일 3시 #영업)'; },
+  });
   cloud = new Cloud({ url: CLOUD_CONFIG.url, key: CLOUD_CONFIG.key, session: LS.get('td_session', null) }, (s) => LS.set('td_session', s));
 
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});

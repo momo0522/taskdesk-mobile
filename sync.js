@@ -1,14 +1,14 @@
 // Supabase 동기화 (PC 코어와 휴대폰 앱이 함께 사용)
 //
 // 서버 테이블 items(user_id, kind, id, data, deleted, updated_at, server_at) 한 곳에
-// 업무(task) · 메모(note) · 분류(category, id = 이름)를 한 줄씩 저장한다.
+// 업무(task) · 일정(event) · 메모(note) · 분류(category, id = 이름)를 한 줄씩 저장한다.
 //  - 올리기: 마지막으로 맞춘 내용의 해시(meta.known)와 지금 내용을 비교해 바뀐 것만 업로드,
 //            사라진 것은 삭제 표시(deleted=true)로 업로드
 //  - 받기: server_at이 meta.cursor 이후인 줄만 받아서 반영
 //  - 충돌: 마지막 수정이 이김 (서버 트리거가 updated_at이 더 오래된 덮어쓰기를 무시)
 // 알림을 보냈는지 같은 기기별 상태는 동기화하지 않는다.
 
-const SYNC_KINDS = ['task', 'note', 'category'];
+const SYNC_KINDS = ['task', 'note', 'category', 'event'];
 
 function stableStringify(v) {
   if (Array.isArray(v)) return `[${v.map(stableStringify).join(',')}]`;
@@ -49,12 +49,14 @@ function collectItems(state, scope = 'all') {
   for (const t of state.tasks || []) if (ok('task', t)) map.set(`task:${t.id}`, { kind: 'task', id: t.id, data: t });
   for (const n of state.notes || []) if (ok('note', n)) map.set(`note:${n.id}`, { kind: 'note', id: n.id, data: n });
   for (const c of state.categories || []) if (ok('category', c)) map.set(`category:${c.name}`, { kind: 'category', id: c.name, data: c });
+  for (const e of state.events || []) if (ok('event', e)) map.set(`event:${e.id}`, { kind: 'event', id: e.id, data: e });
   return map;
 }
 
 function existsLocally(state, kind, id) {
   if (kind === 'task') return (state.tasks || []).some((t) => t.id === id);
   if (kind === 'note') return (state.notes || []).some((n) => n.id === id);
+  if (kind === 'event') return (state.events || []).some((e) => e.id === id);
   return (state.categories || []).some((c) => c.name === id);
 }
 
@@ -173,7 +175,8 @@ async function syncPull(cloud, state, meta) {
       if (!SYNC_KINDS.includes(r.kind)) continue;
       const k = `${r.kind}:${r.id}`;
       const list = r.kind === 'task' ? (state.tasks = state.tasks || [])
-        : r.kind === 'note' ? (state.notes = state.notes || []) : (state.categories = state.categories || []);
+        : r.kind === 'note' ? (state.notes = state.notes || [])
+          : r.kind === 'event' ? (state.events = state.events || []) : (state.categories = state.categories || []);
       const idx = list.findIndex((x) => (r.kind === 'category' ? x.name : x.id) === r.id);
       const local = idx >= 0 ? list[idx] : null;
 

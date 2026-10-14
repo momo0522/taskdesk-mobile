@@ -52,6 +52,21 @@
 
       <section class="view" id="view-today"></section>
 
+      <section class="view hidden" id="view-calendar">
+        <div class="mcal-head">
+          <button class="btn small" id="mc-prev">◀</button>
+          <b id="mc-title"></b>
+          <button class="btn small" id="mc-next">▶</button>
+          <button class="btn small" id="mc-today">오늘</button>
+        </div>
+        <div class="mcal" id="mcal"></div>
+        <div class="mday-head">
+          <b id="mday-title"></b>
+          <button class="btn small primary" id="mday-add">＋ 일정</button>
+        </div>
+        <div id="mday"></div>
+      </section>
+
       <section class="view hidden" id="view-all">
         <div class="filters">
           <input id="f-search" placeholder="검색" />
@@ -112,6 +127,7 @@
 
     <nav class="tabs" id="tabs">
       <button data-tab="today" class="active"><span>📌</span>오늘<i class="badge" id="b-today"></i></button>
+      <button data-tab="calendar"><span>🗓</span>캘린더</button>
       <button data-tab="all"><span>📋</span>전체</button>
       <button data-tab="memo"><span>📝</span>메모</button>
       <button data-tab="settings"><span>⚙️</span>설정</button>
@@ -207,6 +223,56 @@
       </div>
       <label>메모<textarea name="memo" rows="3"></textarea></label>
       <button type="button" class="btn danger wide" id="e-delete">이 업무 삭제</button>
+    </div>
+  </form>
+
+  <!-- 일정 편집 -->
+  <form class="sheet hidden" id="evsheet">
+    <div class="sheet-head">
+      <button type="button" class="btn ghost" id="v-cancel">취소</button>
+      <b id="v-title">일정</b>
+      <button type="submit" class="btn primary">저장</button>
+    </div>
+    <div class="sheet-body">
+      <div class="seg small" id="v-space">
+        <button type="button" data-space="work">💼 회사</button>
+        <button type="button" data-space="personal">🏠 개인</button>
+      </div>
+      <label>제목<input name="title" required autocomplete="off" /></label>
+      <label>날짜<input type="date" name="date" required /></label>
+      <label class="check"><input type="checkbox" name="allDay" /> 하루 종일</label>
+      <div class="grid2" id="v-times">
+        <label>시작<input type="time" name="startTime" /></label>
+        <label>종료<input type="time" name="endTime" /></label>
+      </div>
+      <div class="grid2">
+        <label>종료일 (여러 날)<input type="date" name="endDate" /></label>
+        <label>분류<select name="project"></select></label>
+      </div>
+      <label>장소<input name="location" autocomplete="off" /></label>
+      <div class="grid2">
+        <label>미리 알림
+          <select name="remindBefore">
+            <option value="-1">알림 없음</option>
+            <option value="0">시작 시각</option>
+            <option value="10">10분 전</option>
+            <option value="30">30분 전</option>
+            <option value="60">1시간 전</option>
+            <option value="1440">하루 전</option>
+          </select>
+        </label>
+        <label>반복
+          <select name="repeat">
+            <option value="none">반복 안 함</option>
+            <option value="daily">매일</option>
+            <option value="weekly">매주</option>
+            <option value="monthly">매월</option>
+            <option value="yearly">매년</option>
+          </select>
+        </label>
+      </div>
+      <label>메모<textarea name="memo" rows="3"></textarea></label>
+      <button type="button" class="btn danger wide" id="v-delete">이 일정 삭제</button>
     </div>
   </form>
 

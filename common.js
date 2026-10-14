@@ -48,6 +48,7 @@ function parseQuick(text) {
   s = s.replace(/\s#(\S+)/, (_, p) => { out.project = p; return ' '; });
   s = s.replace(/\s!(?=\s)/, () => { out.priority = 'high'; return ' '; });
   s = s.replace(/\s@(개인|회사)(?=\s)/, (_, w) => { out.space = w === '개인' ? 'personal' : 'work'; return ' '; });
+  s = s.replace(/\s@일정(?=\s)/, () => { out.kind = 'event'; return ' '; });
 
   const rel = { '오늘': 0, '내일': 1, '모레': 2 };
   s = s.replace(/\s(오늘|내일|모레)(?=\s|까지)/, (_, w) => { date = addDays(today, rel[w]); return ' '; });
@@ -71,6 +72,25 @@ function parseQuick(text) {
     return ' ';
   });
 
+  // 시간 범위 (일정용): 15:00~16:30, 3시~4시, 오후 2시~3시반
+  const toHM = (ap, h, m, half) => {
+    h = Number(h);
+    if (ap === '오후' && h < 12) h += 12;
+    if (ap === '오전' && h === 12) h = 0;
+    if (!ap && h >= 1 && h <= 7) h += 12;
+    return `${pad(h)}:${pad(half ? 30 : Number(m || 0))}`;
+  };
+  s = s.replace(/\s(\d{1,2}):(\d{2})\s?[~-]\s?(\d{1,2}):(\d{2})(?=\s|까지)/, (_, h1, m1, h2, m2) => {
+    time = `${pad(h1)}:${m1}`;
+    out.endTime = `${pad(h2)}:${m2}`;
+    return ' ';
+  });
+  s = s.replace(/\s(오전|오후)?\s?(\d{1,2})시(?:\s?(\d{1,2})분|\s?(반))?\s?[~-]\s?(오전|오후)?\s?(\d{1,2})시(?:\s?(\d{1,2})분|\s?(반))?(?=\s|까지)/,
+    (_, ap1, h1, m1, half1, ap2, h2, m2, half2) => {
+      time = toHM(ap1, h1, m1, half1);
+      out.endTime = toHM(ap2 || ap1, h2, m2, half2);
+      return ' ';
+    });
   s = s.replace(/\s(\d{1,2}):(\d{2})(?=\s|까지)/, (_, h, m) => { time = `${pad(h)}:${m}`; return ' '; });
   s = s.replace(/\s(오전|오후)?\s?(\d{1,2})시(?:\s?(\d{1,2})분|\s?반)?(?=\s|까지)/, (all, ap, h, m) => {
     h = Number(h);
@@ -289,9 +309,14 @@ function noteEl(n, { onOpenTask, onConverted } = {}) {
 // ---------- 빠른 추가: 날짜/시간 선택 바 ----------
 // [오늘][내일][모레][날짜][시간]  — 기본 '오늘', 같은 버튼을 다시 누르면 날짜 없음.
 // 입력 문장에 날짜/시간이 있으면 그쪽이 우선.
-function createQuickWhen(root) {
+function createQuickWhen(root, opts = {}) {
   root.classList.add('qw');
-  root.innerHTML = `
+  let kind = 'task';
+  root.innerHTML = (opts.kind ? `
+    <span class="qw-kind">
+      <button type="button" data-k="task" class="on">✓ 할 일</button>
+      <button type="button" data-k="event">📅 일정</button>
+    </span>` : '') + `
     <button type="button" data-d="0">오늘</button>
     <button type="button" data-d="1">내일</button>
     <button type="button" data-d="2">모레</button>
@@ -321,7 +346,15 @@ function createQuickWhen(root) {
     if (timeIn.value && !date) setDate(ymd(new Date()));
   });
 
+  const paintKind = () => root.querySelectorAll('[data-k]').forEach((b) => b.classList.toggle('on', b.dataset.k === kind));
+  root.querySelectorAll('[data-k]').forEach((b) => b.addEventListener('click', () => {
+    kind = b.dataset.k;
+    paintKind();
+    if (opts.onKind) opts.onKind(kind);
+  }));
+
   const api = {
+    kind: () => kind,
     // 문장에서 못 찾은 날짜/시간을 선택 바 값으로 채움
     apply(parsed) {
       if (!parsed.dueDate && date) parsed.dueDate = date;
@@ -336,4 +369,83 @@ function createQuickWhen(root) {
 
 function whenLabel(t) {
   return t.dueDate ? dueLabel(t) : '날짜 없음';
+}
+
+// ---------- 일정 (캘린더) ----------
+// 일정: { id, title, date, endDate(여러 날), allDay, startTime, endTime, location, memo,
+//         space, project, remindBefore(-1 = 알림 없음), repeat: none|daily|weekly|monthly|yearly }
+const EVENT_REPEAT = { none: '반복 안 함', daily: '매일', weekly: '매주', monthly: '매월', yearly: '매년' };
+
+function evSpanDays(ev) {
+  return ev.endDate && ev.endDate > ev.date ? dayDiff(parseYmd(ev.date), parseYmd(ev.endDate)) : 0;
+}
+
+// 날짜 d('YYYY-MM-DD')에 시작하는 회차가 있는지
+function evStartsOn(ev, d) {
+  if (!ev.date || d < ev.date) return false;
+  if (ev.repeatUntil && d > ev.repeatUntil) return false;
+  const r = ev.repeat || 'none';
+  if (r === 'none') return d === ev.date;
+  if (r === 'daily') return true;
+  const a = parseYmd(ev.date);
+  const b = parseYmd(d);
+  if (r === 'weekly') return dayDiff(a, b) % 7 === 0;
+  if (r === 'monthly') return a.getDate() === b.getDate();
+  if (r === 'yearly') return a.getDate() === b.getDate() && a.getMonth() === b.getMonth();
+  return false;
+}
+
+// 날짜 d에 걸쳐 있는 회차의 시작일 (없으면 null)
+function evOccurrenceOn(ev, d) {
+  const span = evSpanDays(ev);
+  for (let k = 0; k <= span; k++) {
+    const s = ymd(addDays(parseYmd(d), -k));
+    if (evStartsOn(ev, s)) return s;
+  }
+  return null;
+}
+
+function eventsOn(d, list) {
+  return (list || state.events || [])
+    .map((ev) => { const start = evOccurrenceOn(ev, d); return start ? { ev, start } : null; })
+    .filter(Boolean)
+    .sort((a, b) => (a.ev.allDay ? '' : a.ev.startTime || '').localeCompare(b.ev.allDay ? '' : b.ev.startTime || ''));
+}
+
+function evTimeLabel(ev) {
+  if (ev.allDay || !ev.startTime) return '종일';
+  return ev.endTime ? `${ev.startTime}~${ev.endTime}` : ev.startTime;
+}
+
+function evColor(ev) {
+  if (ev.project) return catColor(ev.project);
+  return spaceOf(ev) === 'personal' ? '#8e4ec6' : '#0091ff';
+}
+
+function plusHour(hm) {
+  const [h, m] = hm.split(':').map(Number);
+  return h >= 23 ? '23:59' : `${pad(h + 1)}:${pad(m)}`;
+}
+
+// 빠른 추가 결과 → 일정
+function quickToEvent(p) {
+  const start = p.dueTime || '';
+  return {
+    title: p.title,
+    date: p.dueDate || ymd(new Date()),
+    startTime: start,
+    endTime: start ? (p.endTime && p.endTime > start ? p.endTime : plusHour(start)) : '',
+    allDay: !start,
+    space: p.space || defaultSpace(),
+    project: p.project || '',
+    remindBefore: 10,
+    repeat: 'none',
+  };
+}
+
+function evWhenLabel(ev) {
+  const diff = dayDiff(new Date(), parseYmd(ev.date));
+  const d = parseYmd(ev.date);
+  const day = diff === 0 ? '오늘' : diff === 1 ? '내일' : diff === 2 ? '모레' : `${d.getMonth() + 1}/${d.getDate()}(${WD[d.getDay()]})`;
+  return `${day} ${evTimeLabel(ev)}`;
 }

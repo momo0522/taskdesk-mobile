@@ -417,7 +417,30 @@ function evTimeLabel(ev) {
   return ev.endTime ? `${ev.startTime}~${ev.endTime}` : ev.startTime;
 }
 
+// ---------- 공유 캘린더 ----------
+const calOf = (ev) => (ev && ev.calendarId ? (state.calendars || []).find((c) => c.id === ev.calendarId) : null);
+const hiddenCals = () => (state.settings && state.settings.hiddenCals) || [];
+
+// 화면에 보일 일정: 내 캘린더 + 숨기지 않은 공유 캘린더
+function allEvents() {
+  const hidden = hiddenCals();
+  const mine = hidden.includes('me') ? [] : (state.events || []);
+  const shared = (state.sharedEvents || []).filter((e) => !hidden.includes(e.calendarId) && calOf(e));
+  return [...mine, ...shared];
+}
+
+function findEvent(id) {
+  return (state.events || []).find((e) => e.id === id) || (state.sharedEvents || []).find((e) => e.id === id) || null;
+}
+
+function canEditEvent(ev) {
+  const c = calOf(ev);
+  return !ev.calendarId || (c && c.role !== 'viewer');
+}
+
 function evColor(ev) {
+  const cal = calOf(ev);
+  if (cal) return cal.color;
   if (ev.project) return catColor(ev.project);
   return spaceOf(ev) === 'personal' ? '#8e4ec6' : '#0091ff';
 }

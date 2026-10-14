@@ -15,11 +15,12 @@
   <section id="login" class="login hidden">
     <div class="login-box">
       <div class="brand"><span class="logo">✓</span> TaskDesk</div>
-      <p class="muted">PC 앱과 같은 계정으로 로그인하세요.</p>
+      <p class="muted">PC 앱과 같은 계정으로 로그인하세요. 공유 캘린더에 초대받았다면 <b>초대받은 이메일</b>로 계정을 만드세요.</p>
       <form id="login-form">
         <input id="l-email" type="email" placeholder="이메일" autocomplete="username" required />
         <input id="l-pass" type="password" placeholder="비밀번호" autocomplete="current-password" required />
         <button class="btn primary" type="submit">로그인</button>
+        <button class="btn" type="button" id="l-signup">처음이에요 · 계정 만들기</button>
         <p class="error" id="l-error"></p>
       </form>
     </div>
@@ -59,6 +60,7 @@
           <button class="btn small" id="mc-next">▶</button>
           <button class="btn small" id="mc-today">오늘</button>
         </div>
+        <div class="cal-filter" id="cal-filter"></div>
         <div class="mcal" id="mcal"></div>
         <div class="mday-head">
           <b id="mday-title"></b>
@@ -96,6 +98,16 @@
             <button class="btn" id="s-sync-now">지금 동기화</button>
             <button class="btn danger" id="s-logout">로그아웃</button>
           </div>
+        </div>
+        <div class="card">
+          <h3>공유 캘린더</h3>
+          <p class="muted small">캘린더를 만들고 이메일로 초대하면 함께 일정을 볼 수 있어요. 초대받은 사람은 이 앱 주소에서 같은 이메일로 계정을 만들면 돼요.</p>
+          <div id="sc-list"></div>
+          <form class="sc-new" id="sc-new">
+            <input type="color" id="sc-new-color" value="#e5484d" />
+            <input id="sc-new-name" placeholder="새 공유 캘린더 이름" autocomplete="off" />
+            <button class="btn primary" type="submit">만들기</button>
+          </form>
         </div>
         <div class="card">
           <h3>분류 관리</h3>
@@ -238,6 +250,8 @@
         <button type="button" data-space="work">💼 회사</button>
         <button type="button" data-space="personal">🏠 개인</button>
       </div>
+      <p class="ro-note hidden" id="v-ro"></p>
+      <label>캘린더<select id="v-calendar"></select></label>
       <label>제목<input name="title" required autocomplete="off" /></label>
       <label>날짜<input type="date" name="date" required /></label>
       <label class="check"><input type="checkbox" name="allDay" /> 하루 종일</label>

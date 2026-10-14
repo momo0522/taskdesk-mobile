@@ -129,7 +129,9 @@ class Cloud {
       const t = await res.text();
       throw new Error(`서버 오류 ${res.status}: ${t.slice(0, 200)}`);
     }
-    return res.status === 204 || method !== 'GET' ? null : res.json();
+    if (res.status === 204) return null;
+    const text = await res.text();
+    return text ? JSON.parse(text) : null;
   }
 }
 
@@ -182,6 +184,11 @@ async function syncPull(cloud, state, meta) {
 
       // 아직 올리지 못한 로컬 수정이 있으면 로컬 우선 (곧 올라가면서 서버를 덮어씀)
       if (local && meta.known[k] && itemHash(r.kind, local) !== meta.known[k]) continue;
+      // 처음 맞추는 경우(새로 로그인 등): 로컬 수정 시각이 서버보다 나중이면 로컬 우선
+      if (local && !meta.known[k] && !r.deleted) {
+        const localAt = Date.parse(local.updatedAt || local.createdAt || '') || 0;
+        if (localAt > (Date.parse(r.updated_at) || 0) && itemHash(r.kind, local) !== itemHash(r.kind, r.data)) continue;
+      }
 
       if (r.deleted) {
         if (idx >= 0) { list.splice(idx, 1); changed = true; }
@@ -210,3 +217,123 @@ async function syncPull(cloud, state, meta) {
   }
   return { changed, completed };
 }
+
+// ---------- 공유 캘린더 ----------
+// state.calendars    : [{ id, name, color, owner, role: 'owner'|'editor'|'viewer', members: [{ email, role }] }]
+// state.sharedEvents : [{ ...일정, calendarId, updatedBy }]
+// meta               : { cursor, known: { 'calId:id': hash }, cals: [보이던 캘린더 id] }
+const SHARED_COLS = 'calendar_id,id,data,deleted,updated_at,server_at,updated_by';
+
+function sharedData(e) {
+  const { calendarId, updatedBy, ...d } = e;
+  return d;
+}
+const sharedHash = (e) => hashStr(stableStringify(sharedData(e)));
+
+function applyShared(state, meta, r) {
+  const k = `${r.calendar_id}:${r.id}`;
+  const list = (state.sharedEvents = state.sharedEvents || []);
+  const idx = list.findIndex((e) => e.calendarId === r.calendar_id && e.id === r.id);
+  const local = idx >= 0 ? list[idx] : null;
+  if (local && meta.known[k] && sharedHash(local) !== meta.known[k]) return false; // 아직 안 올린 로컬 수정 우선
+  if (r.deleted) {
+    delete meta.known[k];
+    if (idx < 0) return false;
+    list.splice(idx, 1);
+    return true;
+  }
+  const incoming = { ...r.data, id: r.id, calendarId: r.calendar_id, updatedBy: r.updated_by || '' };
+  const h = sharedHash(incoming);
+  meta.known[k] = h;
+  if (local && sharedHash(local) === h) { local.updatedBy = incoming.updatedBy; return false; }
+  if (idx >= 0) list[idx] = incoming;
+  else list.push(incoming);
+  return true;
+}
+
+async function syncShared(cloud, state, meta) {
+  meta.known = meta.known || {};
+  meta.cals = meta.cals || [];
+  const me = cloud.session.userId;
+  const myEmail = (cloud.session.email || '').toLowerCase();
+  const cals = await cloud.rest('GET', 'calendars?select=id,name,color,owner&order=created_at.asc');
+  const members = await cloud.rest('GET', 'calendar_members?select=calendar_id,email,role&order=added_at.asc');
+  state.calendars = cals.map((c) => ({
+    id: c.id,
+    name: c.name,
+    color: c.color,
+    owner: c.owner,
+    role: c.owner === me ? 'owner' : ((members.find((m) => m.calendar_id === c.id && m.email === myEmail) || {}).role || 'viewer'),
+    members: members.filter((m) => m.calendar_id === c.id).map((m) => ({ email: m.email, role: m.role })),
+  }));
+  const ids = new Set(cals.map((c) => c.id));
+  let changed = false;
+
+  // 더 이상 볼 수 없는 캘린더(삭제·내보내짐)의 일정 정리
+  const before = (state.sharedEvents || []).length;
+  state.sharedEvents = (state.sharedEvents || []).filter((e) => ids.has(e.calendarId));
+  if (state.sharedEvents.length !== before) changed = true;
+  for (const k of Object.keys(meta.known)) if (!ids.has(k.split(':')[0])) delete meta.known[k];
+
+  // 새로 보이게 된 캘린더는 처음부터 전부 받기
+  for (const c of cals) {
+    if (meta.cals.includes(c.id)) continue;
+    const rows = await cloud.rest('GET', `shared_events?select=${SHARED_COLS}&calendar_id=eq.${c.id}`);
+    for (const r of rows) if (applyShared(state, meta, r)) changed = true;
+  }
+  meta.cals = [...ids];
+
+  // 바뀐 것만 받기
+  for (;;) {
+    const since = encodeURIComponent(meta.cursor || '1970-01-01T00:00:00Z');
+    const rows = await cloud.rest('GET', `shared_events?select=${SHARED_COLS}&server_at=gt.${since}&order=server_at.asc&limit=500`);
+    for (const r of rows) {
+      meta.cursor = r.server_at;
+      if (applyShared(state, meta, r)) changed = true;
+    }
+    if (rows.length < 500) break;
+  }
+
+  // 올리기 (편집 권한이 있는 캘린더만)
+  const editable = new Set(state.calendars.filter((c) => c.role !== 'viewer').map((c) => c.id));
+  const local = new Map(state.sharedEvents.map((e) => [`${e.calendarId}:${e.id}`, e]));
+  const now = new Date().toISOString();
+  const up = [];
+  for (const [k, e] of local) {
+    if (!editable.has(e.calendarId)) continue;
+    const h = sharedHash(e);
+    if (meta.known[k] !== h) up.push({ k, h, row: { calendar_id: e.calendarId, id: e.id, data: sharedData(e), deleted: false, updated_at: now } });
+  }
+  for (const k of Object.keys(meta.known)) {
+    if (local.has(k)) continue;
+    const [cal, ...rest] = k.split(':');
+    if (!editable.has(cal)) { delete meta.known[k]; continue; }
+    up.push({ k, h: null, row: { calendar_id: cal, id: rest.join(':'), data: {}, deleted: true, updated_at: now } });
+  }
+  for (let i = 0; i < up.length; i += 200) {
+    const batch = up.slice(i, i + 200);
+    await cloud.rest('POST', 'shared_events?on_conflict=calendar_id,id', batch.map((r) => r.row), 'resolution=merge-duplicates,return=minimal');
+    for (const r of batch) {
+      if (r.h) meta.known[r.k] = r.h;
+      else delete meta.known[r.k];
+    }
+  }
+  return { changed, pushed: up.length };
+}
+
+// 캘린더 · 멤버 관리 (온라인에서 바로 반영)
+const CalendarAdmin = {
+  async create(cloud, name, color) {
+    const rows = await cloud.rest('POST', 'calendars', { name, color }, 'return=representation');
+    return rows && rows[0];
+  },
+  update(cloud, id, patch) { return cloud.rest('PATCH', `calendars?id=eq.${id}`, patch, 'return=minimal'); },
+  remove(cloud, id) { return cloud.rest('DELETE', `calendars?id=eq.${id}`, null, 'return=minimal'); },
+  setMember(cloud, calendarId, email, role) {
+    return cloud.rest('POST', 'calendar_members?on_conflict=calendar_id,email',
+      [{ calendar_id: calendarId, email: email.trim().toLowerCase(), role }], 'resolution=merge-duplicates,return=minimal');
+  },
+  removeMember(cloud, calendarId, email) {
+    return cloud.rest('DELETE', `calendar_members?calendar_id=eq.${calendarId}&email=eq.${encodeURIComponent(email.toLowerCase())}`, null, 'return=minimal');
+  },
+};

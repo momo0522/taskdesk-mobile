@@ -7,6 +7,7 @@ let calMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
 let calSel = ymd(new Date());
 let editingEvent = null;
 let meta = { cursor: null, known: {} };
+let sharedMeta = { cursor: null, known: {}, cals: [] };
 let cloud = null;
 let tab = 'today';
 let editing = null;     // 편집 중인 업무 (사본)
@@ -27,8 +28,13 @@ const LS = {
 };
 
 function persist() {
-  LS.set('td_data', { tasks: state.tasks, events: state.events, categories: state.categories, notes: state.notes });
+  LS.set('td_data', {
+    tasks: state.tasks, events: state.events, categories: state.categories, notes: state.notes,
+    calendars: state.calendars || [], sharedEvents: state.sharedEvents || [],
+  });
   LS.set('td_meta', meta);
+  LS.set('td_shared_meta', sharedMeta);
+  LS.set('td_hidden_cals', state.settings.hiddenCals || []);
   LS.set('td_view', state.settings.viewSpace);
 }
 
@@ -136,6 +142,23 @@ window.api = {
     return ev;
   },
   async deleteEvent(id) { state.events = (state.events || []).filter((e) => e.id !== id); changed(); },
+  async saveSharedEvent(input) {
+    const now = new Date().toISOString();
+    state.sharedEvents = state.sharedEvents || [];
+    let ev = input.id && state.sharedEvents.find((x) => x.id === input.id && x.calendarId === input.calendarId);
+    if (ev) Object.assign(ev, input, { updatedAt: now });
+    else {
+      ev = {
+        title: '', date: ymd(new Date()), endDate: '', allDay: true, startTime: '', endTime: '', location: '', memo: '',
+        space: 'work', project: '', remindBefore: 10, repeat: 'none', createdAt: now, ...input,
+        id: Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
+      };
+      state.sharedEvents.push(ev);
+    }
+    changed();
+    return ev;
+  },
+  async deleteSharedEvent(id) { state.sharedEvents = (state.sharedEvents || []).filter((e) => e.id !== id); changed(); },
 };
 
 // ---------- 동기화 ----------
@@ -158,6 +181,8 @@ async function runSync() {
   try {
     const pulled = await syncPull(cloud, state, meta);
     await syncPush(cloud, state, meta, 'all');
+    const shared = await syncShared(cloud, state, sharedMeta);
+    if (shared.changed) pulled.changed = true;
     LS.set('td_last', new Date().toISOString());
     setDot('ok', `동기화됨 ${new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })}`);
     persist();
@@ -251,6 +276,7 @@ function eventRow(ev) {
   m.className = 'r-meta';
   const items = [
     [viewSpace() === 'all' && spaceOf(ev) === 'personal' ? '🏠' : ''],
+    [calOf(ev) ? `👥 ${calOf(ev).name}` : '', 'tag', calOf(ev) ? calOf(ev).color : ''],
     [ev.location ? `📍 ${ev.location}` : ''],
     [ev.project, 'tag', catColor(ev.project)],
     [ev.repeat && ev.repeat !== 'none' ? `🔁 ${EVENT_REPEAT[ev.repeat]}` : ''],
@@ -270,7 +296,30 @@ function eventRow(ev) {
 }
 
 // ---------- 캘린더 ----------
+function renderCalFilter() {
+  const box = $('#cal-filter');
+  box.innerHTML = '';
+  const cals = [{ id: 'me', name: '내 캘린더', color: '#0091ff' }, ...(state.calendars || [])];
+  if (cals.length < 2) return; // 공유 캘린더가 없으면 숨김
+  const hidden = hiddenCals();
+  for (const c of cals) {
+    const b = document.createElement('button');
+    b.className = hidden.includes(c.id) ? '' : 'on';
+    b.style.setProperty('--c', c.color);
+    b.innerHTML = '<span class="d"></span><span></span>';
+    b.lastChild.textContent = c.id === 'me' ? c.name : `👥 ${c.name}`;
+    b.addEventListener('click', () => {
+      const h = hiddenCals();
+      state.settings.hiddenCals = h.includes(c.id) ? h.filter((x) => x !== c.id) : [...h, c.id];
+      persist();
+      render();
+    });
+    box.append(b);
+  }
+}
+
 function renderCal() {
+  renderCalFilter();
   const y = calMonth.getFullYear();
   const mo = calMonth.getMonth();
   $('#mc-title').textContent = `${y}년 ${mo + 1}월`;
@@ -279,7 +328,7 @@ function renderCal() {
   const rows = Math.ceil((first.getDay() + days) / 7);
   const start = addDays(first, -first.getDay());
   const today = ymd(new Date());
-  const evs = (state.events || []).filter(inView);
+  const evs = allEvents().filter(inView);
   const tasks = vt().filter((t) => t.dueDate && t.status !== 'done');
   const box = $('#mcal');
   box.innerHTML = '';
@@ -366,7 +415,7 @@ function renderToday() {
   const box = $('#view-today');
   box.innerHTML = '';
   if (overdue.length) { sec(box, `⚠️ 지연 ${overdue.length}`, 'late'); overdue.forEach((t) => box.append(taskRow(t))); }
-  const evToday = eventsOn(today, (state.events || []).filter(inView));
+  const evToday = eventsOn(today, allEvents().filter(inView));
   if (evToday.length) { sec(box, `📅 오늘 일정 ${evToday.length}`); evToday.forEach(({ ev }) => box.append(eventRow(ev))); }
   sec(box, `📌 오늘 ${todays.length}`);
   todays.forEach((t) => box.append(taskRow(t)));
@@ -421,8 +470,99 @@ function renderMemo() {
   })));
 }
 
+async function calAction(fn, okMsg) {
+  try {
+    await fn();
+    await runSync();
+    if (okMsg) toast(okMsg);
+  } catch (e) {
+    toast(/row-level security|42501/.test(e.message) ? '권한이 없어요. 캘린더를 만든 사람만 바꿀 수 있어요.' : e.message);
+  }
+  renderSharedCals();
+}
+
+function renderSharedCals() {
+  const box = $('#sc-list');
+  if (box.contains(document.activeElement)) return;
+  box.innerHTML = '';
+  const cals = state.calendars || [];
+  if (!cals.length) { box.innerHTML = '<p class="muted small">아직 공유 캘린더가 없어요.</p>'; return; }
+  for (const c of cals) {
+    const owner = c.role === 'owner';
+    const wrap = document.createElement('div');
+    wrap.className = 'sc-cal';
+    const head = document.createElement('div');
+    head.className = 'sc-head';
+    head.style.setProperty('--c', c.color);
+    head.innerHTML = '<span class="d"></span><b></b><span class="role"></span>';
+    head.querySelector('b').textContent = c.name;
+    head.querySelector('.role').textContent = `${owner ? '내가 만듦' : c.role === 'editor' ? '편집 가능' : '보기만'} · 👥 ${c.members.length + 1}`;
+    const body = document.createElement('div');
+    body.className = 'sc-body hidden';
+    head.addEventListener('click', () => body.classList.toggle('hidden'));
+    for (const m of c.members) {
+      const row = document.createElement('div');
+      row.className = 'sc-mem';
+      const em = document.createElement('span');
+      em.className = 'em';
+      em.textContent = m.email;
+      row.append(em);
+      if (owner) {
+        const sel = document.createElement('select');
+        [['editor', '편집 가능'], ['viewer', '보기만']].forEach(([v, l]) => { const o = document.createElement('option'); o.value = v; o.textContent = l; sel.append(o); });
+        sel.value = m.role;
+        sel.addEventListener('change', () => calAction(() => CalendarAdmin.setMember(cloud, c.id, m.email, sel.value), '권한을 바꿨어요.'));
+        const x = document.createElement('button');
+        x.className = 'x';
+        x.textContent = '✕';
+        x.addEventListener('click', () => { if (confirm(`${m.email}을(를) 뺄까요?`)) calAction(() => CalendarAdmin.removeMember(cloud, c.id, m.email), '멤버를 뺐어요.'); });
+        row.append(sel, x);
+      } else {
+        const r = document.createElement('span');
+        r.className = 'muted small';
+        r.textContent = m.role === 'editor' ? '편집 가능' : '보기만';
+        row.append(r);
+      }
+      body.append(row);
+    }
+    if (owner) {
+      const inv = document.createElement('div');
+      inv.className = 'sc-inv';
+      inv.innerHTML = '<input type="email" placeholder="초대할 이메일" /><select><option value="editor">편집 가능</option><option value="viewer">보기만</option></select><button class="btn small primary" type="button">초대</button>';
+      inv.querySelector('button').addEventListener('click', () => {
+        const email = inv.querySelector('input').value.trim().toLowerCase();
+        if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { toast('이메일 주소를 확인하세요.'); return; }
+        calAction(() => CalendarAdmin.setMember(cloud, c.id, email, inv.querySelector('select').value), `${email}을(를) 초대했어요.`);
+      });
+      body.append(inv);
+    }
+    const act = document.createElement('button');
+    act.className = 'btn small danger';
+    act.textContent = owner ? '캘린더 삭제' : '이 캘린더에서 나가기';
+    act.addEventListener('click', () => {
+      if (owner) {
+        if (confirm(`'${c.name}' 캘린더를 삭제할까요? 모든 멤버에게서 사라져요.`)) calAction(() => CalendarAdmin.remove(cloud, c.id), '캘린더를 삭제했어요.');
+      } else if (confirm(`'${c.name}' 캘린더에서 나갈까요?`)) {
+        calAction(() => CalendarAdmin.removeMember(cloud, c.id, cloud.session.email || ''), '캘린더에서 나갔어요.');
+      }
+    });
+    body.append(act);
+    wrap.append(head, body);
+    box.append(wrap);
+  }
+}
+
+$('#sc-new').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const name = $('#sc-new-name').value.trim();
+  if (!name) return;
+  calAction(() => CalendarAdmin.create(cloud, name, $('#sc-new-color').value), `공유 캘린더 '${name}'을(를) 만들었어요. 눌러서 멤버를 초대하세요.`);
+  $('#sc-new-name').value = '';
+});
+
 function renderSettings() {
   if (!cloud) return;
+  renderSharedCals();
   renderCategories();
   $('#s-email').textContent = (cloud.session && cloud.session.email) || '-';
   const last = LS.get('td_last', '');
@@ -741,9 +881,21 @@ function syncEventAllDay() {
   $('#v-times').classList.toggle('hidden', f.allDay.checked);
 }
 
+function fillCalendarSelect(current) {
+  const sel = $('#v-calendar');
+  sel.innerHTML = '';
+  const add = (v, label) => { const o = document.createElement('option'); o.value = v; o.textContent = label; sel.append(o); };
+  add('me', '🔒 내 캘린더 (나만 보기)');
+  for (const c of state.calendars || []) {
+    if (c.role === 'viewer' && c.id !== current) continue;
+    add(c.id, `👥 ${c.name}${c.role === 'viewer' ? ' (보기만)' : ''}`);
+  }
+  sel.value = current || 'me';
+}
+
 function openEventEditor(id, preset = {}) {
   if ($('#sheet') && !$('#sheet').classList.contains('hidden')) closeEditor(true);
-  const ev = id ? (state.events || []).find((e) => e.id === id) : null;
+  const ev = id ? findEvent(id) : null;
   if (id && !ev) return;
   editingEvent = ev ? structuredClone(ev) : {
     title: '', date: calSel || ymd(new Date()), endDate: '', allDay: false, startTime: '', endTime: '', location: '', memo: '',
@@ -756,8 +908,16 @@ function openEventEditor(id, preset = {}) {
   setEventSpace(editingEvent.space || 'work');
   fillEventCategories(editingEvent.space || 'work', editingEvent.project);
   syncEventAllDay();
-  $('#v-title').textContent = ev ? '일정 수정' : '새 일정';
-  $('#v-delete').classList.toggle('hidden', !ev);
+  fillCalendarSelect((ev && ev.calendarId) || preset.calendarId || 'me');
+  const ro = !!ev && !canEditEvent(ev);
+  $('#evsheet').querySelectorAll('.sheet-body input, .sheet-body select, .sheet-body textarea').forEach((el) => { el.disabled = ro; });
+  $$('#v-space button').forEach((b) => { b.disabled = ro; });
+  $('#evsheet button[type=submit]').classList.toggle('hidden', ro);
+  const cal = calOf(ev);
+  $('#v-ro').textContent = cal ? `${ro ? '👀 보기만 가능한' : '👥'} '${cal.name}' 공유 캘린더 일정${ev.updatedBy ? ` · 마지막 수정 ${ev.updatedBy}` : ''}` : '';
+  $('#v-ro').classList.toggle('hidden', !cal);
+  $('#v-title').textContent = ev ? (ro ? '일정 보기' : '일정 수정') : '새 일정';
+  $('#v-delete').classList.toggle('hidden', !ev || ro);
   $('#evsheet').classList.remove('hidden');
   $('#sheet-back').classList.remove('hidden');
   $('#evsheet .sheet-body').scrollTop = 0;
@@ -797,8 +957,14 @@ $('#evsheet').addEventListener('submit', (e) => {
   if (!data.title || !data.date) return;
   if (f.endDate.value && f.endDate.value < f.date.value) { toast('종료일이 시작 날짜보다 빨라요.'); return; }
   if (!allDay && data.endTime && !data.endDate && data.endTime <= data.startTime) { toast('종료 시각이 시작 시각보다 빨라요.'); return; }
-  if (editingEvent.id) data.id = editingEvent.id;
-  window.api.saveEvent(data);
+  const target = $('#v-calendar').value || 'me';
+  const origCal = editingEvent.id ? (editingEvent.calendarId || 'me') : null;
+  if (editingEvent.id && origCal !== target) {
+    if (origCal === 'me') window.api.deleteEvent(editingEvent.id);
+    else window.api.deleteSharedEvent(editingEvent.id);
+  } else if (editingEvent.id) data.id = editingEvent.id;
+  if (target === 'me') window.api.saveEvent(data);
+  else window.api.saveSharedEvent({ ...data, calendarId: target });
   closeEditor();
   toast(`📅 일정 저장: ${data.title}`);
 });
@@ -806,7 +972,8 @@ $('#v-delete').addEventListener('click', () => {
   if (!editingEvent || !editingEvent.id) return;
   const rep = editingEvent.repeat && editingEvent.repeat !== 'none';
   if (!confirm(rep ? '이 반복 일정을 삭제할까요? 모든 회차가 삭제돼요.' : '이 일정을 삭제할까요?')) return;
-  window.api.deleteEvent(editingEvent.id);
+  if (editingEvent.calendarId) window.api.deleteSharedEvent(editingEvent.id);
+  else window.api.deleteEvent(editingEvent.id);
   closeEditor();
 });
 
@@ -926,6 +1093,9 @@ $('#s-logout').addEventListener('click', () => {
   if (!confirm('로그아웃할까요? 이 휴대폰에 저장된 사본도 지워져요.')) return;
   cloud.signOut();
   meta = { cursor: null, known: {} };
+  sharedMeta = { cursor: null, known: {}, cals: [] };
+  state.calendars = [];
+  state.sharedEvents = [];
   state.tasks = []; state.events = []; state.categories = []; state.notes = [];
   persist();
   LS.set('td_push', false);
@@ -944,6 +1114,7 @@ async function savePushSubscription(sub) {
     sub: sub.toJSON(),
     prefs: { workOff: !!LS.get('td_workoff', false) },
     tz_offset: new Date().getTimezoneOffset(),
+    email: (cloud.session && cloud.session.email || '').toLowerCase(),
   }], 'resolution=merge-duplicates,return=minimal');
 }
 
@@ -984,26 +1155,38 @@ function showApp() {
   render();
 }
 
-$('#login-form').addEventListener('submit', async (e) => {
-  e.preventDefault();
+async function doLogin(signup) {
   $('#l-error').textContent = '';
+  const email = $('#l-email').value.trim();
+  const pass = $('#l-pass').value;
+  if (!email || pass.length < 6) { $('#l-error').textContent = '이메일과 6자 이상 비밀번호를 입력하세요.'; return; }
   try {
-    await cloud.signIn($('#l-email').value.trim(), $('#l-pass').value);
+    if (signup) await cloud.signUp(email, pass);
+    else await cloud.signIn(email, pass);
     meta = { cursor: null, known: {} };
+    sharedMeta = { cursor: null, known: {}, cals: [] };
+    state.calendars = [];
+    state.sharedEvents = [];
     state.tasks = []; state.events = []; state.categories = []; state.notes = [];
     $('#l-pass').value = '';
     showApp();
     await runSync();
   } catch (err) {
-    $('#l-error').textContent = /invalid/i.test(err.message) ? '이메일 또는 비밀번호가 맞지 않아요.' : err.message;
+    $('#l-error').textContent = /invalid/i.test(err.message) ? '이메일 또는 비밀번호가 맞지 않아요.'
+      : /already registered/i.test(err.message) ? '이미 있는 계정이에요. 로그인을 눌러주세요.'
+        : /signups not allowed/i.test(err.message) ? '지금은 새 계정을 만들 수 없어요. 관리자에게 문의하세요.' : err.message;
   }
-});
+}
+$('#login-form').addEventListener('submit', (e) => { e.preventDefault(); doLogin(false); });
+$('#l-signup').addEventListener('click', () => doLogin(true));
 
 // ---------- 시작 ----------
 function start() {
   const data = LS.get('td_data', null);
   if (data) Object.assign(state, data);
   meta = LS.get('td_meta', meta);
+  sharedMeta = LS.get('td_shared_meta', sharedMeta);
+  state.settings.hiddenCals = LS.get('td_hidden_cals', []);
   state.settings.viewSpace = LS.get('td_view', 'all');
   addWhen = createQuickWhen($('#add-when'), {
     kind: true,
@@ -1016,6 +1199,10 @@ function start() {
   if (!cloud.signedIn) { showLogin(); return; }
   showApp();
   runSync();
+  // 알림을 켜둔 휴대폰이면 구독 정보(이메일 등)를 최신으로
+  if (LS.get('td_push', false) && 'serviceWorker' in navigator) {
+    navigator.serviceWorker.ready.then((reg) => reg.pushManager.getSubscription()).then((sub) => sub && savePushSubscription(sub)).catch(() => {});
+  }
 
   // 알림을 눌러 열린 경우 해당 업무 열기 / ?tab=memo 같은 바로가기
   const params = new URLSearchParams(location.search);

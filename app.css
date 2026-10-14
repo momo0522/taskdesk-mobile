@@ -183,3 +183,15 @@ main {
   opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 20; max-width: 90vw;
 }
 .toast.show { opacity: 1; }
+
+/* 선행 / 후행 */
+.btn.small { padding: 5px 10px; font-size: 12.5px; border-radius: 8px; }
+.dep-row { display: flex; flex-direction: column; gap: 6px; background: #f6f7f9; border-radius: 10px; padding: 8px 10px; }
+.dep-row .dep-top { display: flex; align-items: center; gap: 8px; }
+.dep-row .dep-name { flex: 1; min-width: 0; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dep-row .dep-x { border: 0; background: none; color: var(--muted); font-size: 16px; }
+.dep-row select, .dep-row input { font-size: 13px; padding: 6px 8px; }
+.dep-row .dep-res { font-size: 12px; font-weight: 600; color: var(--low); }
+.dep-row .dep-res.skip { color: var(--muted); }
+.succ-btns { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.r-meta .succ { color: var(--muted); }

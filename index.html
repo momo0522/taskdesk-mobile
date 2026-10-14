@@ -173,9 +173,17 @@
           <button type="button" class="btn" id="e-sub-add">＋</button>
         </div>
       </div>
-      <div class="box hidden" id="e-deps-box">
-        <div class="box-head">선행 업무 <span class="muted small">(연결 변경은 PC에서)</span></div>
+      <div class="box" id="e-deps-box">
+        <div class="box-head">선행 업무 <span class="muted small">이 업무 전에 끝나야 하는 일</span></div>
         <div id="e-deps"></div>
+        <select id="e-dep-add"></select>
+        <div class="muted small" id="e-succ"></div>
+        <div class="succ-btns hidden" id="e-succ-btns">
+          <span class="muted small">이 업무 다음에:</span>
+          <button type="button" class="btn small" data-succ="always">＋ 후행</button>
+          <button type="button" class="btn small" data-succ="ontime">＋ 기한 내 완료 시</button>
+          <button type="button" class="btn small" data-succ="late">＋ 못 끝나면(대안)</button>
+        </div>
       </div>
       <label>메모<textarea name="memo" rows="3"></textarea></label>
       <button type="button" class="btn danger wide" id="e-delete">이 업무 삭제</button>

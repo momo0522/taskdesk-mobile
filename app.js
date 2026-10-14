@@ -8,6 +8,8 @@ let cloud = null;
 let tab = 'today';
 let editing = null;     // 편집 중인 업무 (사본)
 let editSubs = [];
+let editDeps = [];
+let editCond = {};
 let addWhen = null;
 let syncTimer = null;
 let syncing = false;
@@ -174,6 +176,7 @@ function taskRow(t) {
       [t.project, 'tag', catColor(t.project)],
       [cond, 'cond'],
       [!cond && isBlocked(t) ? '🔒 선행 대기' : '', 'lock'],
+      [t.status !== 'done' && succsOf(t).filter((x) => x.status !== 'done').length ? `→ 후행 ${succsOf(t).filter((x) => x.status !== 'done').length}건` : '', 'succ'],
       [cl.length ? `☑ ${cl.filter((c) => c.done).length}/${cl.length}` : ''],
       [t.skipped ? '⏭ 건너뜀' : ''],
     ],
@@ -346,32 +349,114 @@ function renderSubs() {
   $('#e-sub-prog').textContent = editSubs.length ? `${done}/${editSubs.length}` : '';
 }
 
-function openEditor(id) {
+// 선행 업무 목록 (조건 선택 포함)
+function renderDeps() {
+  const box = $('#e-deps');
+  box.innerHTML = '';
+  for (const id of editDeps) {
+    const p = taskById(id);
+    if (!p) continue;
+    const c = editCond[id] || { mode: 'always', by: '' };
+    const row = document.createElement('div');
+    row.className = 'dep-row';
+    const top = document.createElement('div');
+    top.className = 'dep-top';
+    const name = document.createElement('span');
+    name.className = 'dep-name';
+    name.textContent = `${p.status === 'done' ? '✓' : '🔒'} ${p.title}${p.dueDate ? ` (마감 ${dueLabel(p)})` : ''}`;
+    const x = document.createElement('button');
+    x.type = 'button';
+    x.className = 'dep-x';
+    x.textContent = '✕';
+    x.addEventListener('click', () => { editDeps = editDeps.filter((d) => d !== id); delete editCond[id]; renderDeps(); });
+    top.append(name, x);
+
+    const mode = document.createElement('select');
+    [['always', '완료되면 진행'], ['ontime', '기한 내 완료되면 진행'], ['late', '기한까지 못 끝나면 진행 (대안)']].forEach(([v, label]) => {
+      const o = document.createElement('option'); o.value = v; o.textContent = label; mode.append(o);
+    });
+    mode.value = c.mode || 'always';
+    const by = document.createElement('input');
+    by.type = 'datetime-local';
+    by.value = c.by || '';
+    by.title = '기한 (비우면 선행 업무 마감)';
+    by.classList.toggle('hidden', mode.value === 'always');
+    const update = () => { editCond[id] = { mode: mode.value, by: by.value }; renderDeps(); };
+    mode.addEventListener('change', update);
+    by.addEventListener('change', update);
+    row.append(top, mode, by);
+    if (c.result) {
+      const r = document.createElement('span');
+      r.className = `dep-res ${c.result}`;
+      r.textContent = c.result === 'go' ? '→ 진행 결정됨' : '→ 건너뜀';
+      row.append(r);
+    }
+    box.append(row);
+  }
+
+  // 후보: 자기 자신, 이미 고른 것, 자신의 후행(순환) 제외
+  const blocked = editing && editing.id ? descendants(editing.id) : new Set();
+  const cands = state.tasks
+    .filter((t) => t.id !== (editing && editing.id) && !editDeps.includes(t.id) && !blocked.has(t.id))
+    .sort((a, b) => (a.status === 'done') - (b.status === 'done') || byTime(a, b));
+  const sel = $('#e-dep-add');
+  sel.innerHTML = '';
+  const first = document.createElement('option');
+  first.value = '';
+  first.textContent = cands.length ? '＋ 선행 업무 선택…' : '연결할 수 있는 업무가 없어요';
+  sel.append(first);
+  for (const t of cands) {
+    const o = document.createElement('option');
+    o.value = t.id;
+    o.textContent = `${t.status === 'done' ? '✓ ' : ''}${t.project ? `[${t.project}] ` : ''}${t.title}${t.dueDate ? ` (~${dueLabel(t)})` : ''}`;
+    sel.append(o);
+  }
+
+  const succ = editing && editing.id ? succsOf({ id: editing.id }) : [];
+  $('#e-succ').textContent = succ.length ? `후행 업무: ${succ.map((s) => s.title).join(', ')}` : '';
+  $('#e-succ-btns').classList.toggle('hidden', !(editing && editing.id));
+}
+
+$('#e-dep-add').addEventListener('change', (e) => {
+  if (e.target.value) editDeps.push(e.target.value);
+  renderDeps();
+});
+
+// 이 업무 다음에 할 일 만들기 (편집 창을 그 자리에서 새 업무로 바꿈)
+$$('#e-succ-btns [data-succ]').forEach((b) => b.addEventListener('click', () => {
+  const t = editing && editing.id && taskById(editing.id);
+  if (!t) return;
+  const mode = b.dataset.succ;
+  if (mode !== 'always' && !t.dueDate) { toast('조건부 후행은 이 업무에 마감일이 있어야 해요.'); return; }
+  const base = t.dueDate || t.startDate;
+  openEditor(null, {
+    space: spaceOf(t),
+    project: t.project,
+    dependsOn: [t.id],
+    depCond: mode === 'always' ? {} : { [t.id]: { mode, by: '' } },
+    startDate: base ? ymd(addDays(parseYmd(base), 1)) : '',
+  }, true);
+}));
+
+function openEditor(id, preset = {}, inPlace = false) {
   const t = id ? state.tasks.find((x) => x.id === id) : null;
   if (id && !t) return;
-  editing = t ? structuredClone(t) : { space: defaultSpace(), status: 'todo', priority: 'mid', remindBefore: 10, repeat: 'none' };
+  editing = t ? structuredClone(t) : { space: defaultSpace(), status: 'todo', priority: 'mid', remindBefore: 10, repeat: 'none', ...preset };
   const f = $('#sheet').elements;
   for (const k of ['title', 'status', 'dueDate', 'dueTime', 'startDate', 'priority', 'remindBefore', 'repeat', 'memo']) f[k].value = editing[k] ?? '';
   setEditSpace(editing.space || 'work');
   fillCategories(editing.space || 'work', editing.project);
   editSubs = structuredClone(editing.checklist || []);
   renderSubs();
-  const preds = t ? predsOf(t) : [];
-  $('#e-deps-box').classList.toggle('hidden', !preds.length);
-  $('#e-deps').innerHTML = '';
-  preds.forEach((p) => {
-    const d = document.createElement('div');
-    d.className = 'dep';
-    const c = condOf(t, p.id);
-    const mode = c ? (c.mode === 'ontime' ? ' · 기한 내 완료 시 진행' : ' · 못 끝나면 진행(대안)') : '';
-    d.textContent = `${p.status === 'done' ? '✓' : '🔒'} ${p.title}${mode}`;
-    $('#e-deps').append(d);
-  });
+  editDeps = [...(editing.dependsOn || [])];
+  editCond = structuredClone(editing.depCond || {});
+  renderDeps();
   $('#e-title').textContent = t ? '업무 수정' : '새 업무';
   $('#e-delete').classList.toggle('hidden', !t);
   $('#sheet').classList.remove('hidden');
   $('#sheet-back').classList.remove('hidden');
-  history.pushState({ sheet: true }, '');
+  $('#sheet .sheet-body').scrollTop = 0;
+  if (!inPlace) history.pushState({ sheet: true }, '');
 }
 
 function closeEditor(fromPop) {
@@ -427,6 +512,14 @@ $('#sheet').addEventListener('submit', (e) => {
     repeat: f.repeat.value,
     memo: f.memo.value,
     checklist: editSubs,
+    dependsOn: editDeps,
+    depCond: Object.fromEntries(editDeps.filter((id) => editCond[id] && editCond[id].mode !== 'always').map((id) => {
+      const before = editing.id && taskById(editing.id) && (taskById(editing.id).depCond || {})[id];
+      const now = editCond[id];
+      // 조건이 그대로면 판단 결과 유지, 바뀌었으면 PC가 다시 판단
+      const same = before && before.mode === now.mode && (before.by || '') === (now.by || '');
+      return [id, same ? before : { mode: now.mode, by: now.by || '' }];
+    })),
   };
   if (!data.title) return;
   if (data.dueTime && !data.dueDate) data.dueDate = ymd(new Date());

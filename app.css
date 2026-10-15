@@ -260,3 +260,18 @@ input[type=color] { width: 40px; height: 38px; padding: 3px; flex-shrink: 0; }
 .sc-new { display: flex; gap: 6px; margin-top: 8px; }
 .sc-new #sc-new-name { flex: 1; min-width: 0; }
 .sheet input:disabled, .sheet select:disabled, .sheet textarea:disabled { background: #f6f7f9; }
+
+/* 반복 설정 */
+.rp { display: flex; flex-direction: column; gap: 8px; }
+.rp-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.rp-every { display: inline-flex; align-items: center; gap: 4px; font-size: 14px; }
+.rp-n { width: 60px; text-align: center; }
+.rp.off .rp-every, .rp.off .rp-until-l, .rp.off .rp-days { display: none; }
+.rp-days { display: flex; gap: 4px; }
+.rp-days button { flex: 1; height: 34px; border: 1px solid var(--line); background: var(--panel); border-radius: 8px; font-size: 13px; color: var(--muted); padding: 0; }
+.rp-days button.on { background: var(--primary); border-color: var(--primary); color: #fff; font-weight: 600; }
+.sheet .rp-until-l { flex-direction: row; align-items: center; gap: 8px; }
+.rp-until-l input { flex: 1; }
+.rp-hint { font-size: 12px; color: var(--muted); }
+.rp-sum { font-size: 13px; font-weight: 600; color: var(--primary); }
+.rp-sum:empty { display: none; }

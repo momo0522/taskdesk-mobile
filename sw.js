@@ -1,5 +1,5 @@
 // TaskDesk 서비스 워커: 앱 파일 캐시(오프라인 열기) + 푸시 알림
-const CACHE = 'taskdesk-202610140221';
+const CACHE = 'taskdesk-202610150710';
 const ASSETS = ['./', 'index.html', 'app.css', 'app.js', 'common.js', 'sync.js', 'config.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', (e) => {

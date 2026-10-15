@@ -6,6 +6,7 @@ let state = { tasks: [], events: [], categories: [], notes: [], settings: { view
 let calMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
 let calSel = ymd(new Date());
 let editingEvent = null;
+let evRepeat = null;
 let meta = { cursor: null, known: {} };
 let sharedMeta = { cursor: null, known: {}, cals: [] };
 let cloud = null;
@@ -279,7 +280,7 @@ function eventRow(ev) {
     [calOf(ev) ? `👥 ${calOf(ev).name}` : '', 'tag', calOf(ev) ? calOf(ev).color : ''],
     [ev.location ? `📍 ${ev.location}` : ''],
     [ev.project, 'tag', catColor(ev.project)],
-    [ev.repeat && ev.repeat !== 'none' ? `🔁 ${EVENT_REPEAT[ev.repeat]}` : ''],
+    [ev.repeat && ev.repeat !== 'none' ? `🔁 ${repeatLabel(ev)}` : ''],
   ];
   for (const it of items) {
     if (!it[0]) continue;
@@ -902,7 +903,8 @@ function openEventEditor(id, preset = {}) {
     space: defaultSpace(), project: '', remindBefore: 10, repeat: 'none', ...preset,
   };
   const f = $('#evsheet').elements;
-  for (const k of ['title', 'date', 'endDate', 'startTime', 'endTime', 'location', 'memo', 'repeat']) f[k].value = editingEvent[k] || (k === 'repeat' ? 'none' : '');
+  for (const k of ['title', 'date', 'endDate', 'startTime', 'endTime', 'location', 'memo']) f[k].value = editingEvent[k] || '';
+  evRepeat = createRepeatEditor($('#v-repeat'), editingEvent, () => $('#evsheet').elements.date.value);
   f.allDay.checked = !!editingEvent.allDay;
   f.remindBefore.value = String(editingEvent.remindBefore ?? 10);
   setEventSpace(editingEvent.space || 'work');
@@ -950,7 +952,7 @@ $('#evsheet').addEventListener('submit', (e) => {
     location: f.location.value.trim(),
     memo: f.memo.value,
     remindBefore: Number(f.remindBefore.value),
-    repeat: f.repeat.value,
+    ...evRepeat.value(),
     space: editingEvent.space || 'work',
     project: f.project.value,
   };
@@ -1200,8 +1202,13 @@ function start() {
   showApp();
   runSync();
   // 알림을 켜둔 휴대폰이면 구독 정보(이메일 등)를 최신으로
-  if (LS.get('td_push', false) && 'serviceWorker' in navigator) {
-    navigator.serviceWorker.ready.then((reg) => reg.pushManager.getSubscription()).then((sub) => sub && savePushSubscription(sub)).catch(() => {});
+  // 구독이 브라우저에서 사라졌으면(만료 등) 권한이 있는 한 자동으로 다시 연결
+  if (LS.get('td_push', false) && 'serviceWorker' in navigator && 'Notification' in window && Notification.permission === 'granted') {
+    navigator.serviceWorker.ready
+      .then(async (reg) => (await reg.pushManager.getSubscription())
+        || reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlB64ToUint8Array(CLOUD_CONFIG.vapidPublic) }))
+      .then((sub) => sub && savePushSubscription(sub))
+      .catch(() => {});
   }
 
   // 알림을 눌러 열린 경우 해당 업무 열기 / ?tab=memo 같은 바로가기

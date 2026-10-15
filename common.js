@@ -381,19 +381,99 @@ function evSpanDays(ev) {
 }
 
 // 날짜 d('YYYY-MM-DD')에 시작하는 회차가 있는지
+// 반복 규칙: repeat(daily|weekly|monthly|yearly) · repeatEvery(N마다, 기본 1)
+//            repeatDays(매주일 때 요일 0~6, 비우면 시작 요일) · repeatUntil(종료일, 비우면 계속)
 function evStartsOn(ev, d) {
   if (!ev.date || d < ev.date) return false;
   if (ev.repeatUntil && d > ev.repeatUntil) return false;
   const r = ev.repeat || 'none';
   if (r === 'none') return d === ev.date;
-  if (r === 'daily') return true;
+  const n = Math.max(1, Number(ev.repeatEvery) || 1);
   const a = parseYmd(ev.date);
   const b = parseYmd(d);
-  if (r === 'weekly') return dayDiff(a, b) % 7 === 0;
-  if (r === 'monthly') return a.getDate() === b.getDate();
-  if (r === 'yearly') return a.getDate() === b.getDate() && a.getMonth() === b.getMonth();
+  if (r === 'daily') return dayDiff(a, b) % n === 0;
+  if (r === 'weekly') {
+    const days = ev.repeatDays && ev.repeatDays.length ? ev.repeatDays.map(Number) : [a.getDay()];
+    if (!days.includes(b.getDay())) return false;
+    const weeks = Math.round(dayDiff(addDays(a, -a.getDay()), addDays(b, -b.getDay())) / 7); // 일요일 기준 몇 주째
+    return weeks % n === 0;
+  }
+  const months = (b.getFullYear() - a.getFullYear()) * 12 + (b.getMonth() - a.getMonth());
+  if (r === 'monthly') return a.getDate() === b.getDate() && months % n === 0;
+  if (r === 'yearly') return a.getDate() === b.getDate() && a.getMonth() === b.getMonth() && (b.getFullYear() - a.getFullYear()) % n === 0;
   return false;
 }
+
+// '2주마다 월·수 (~12/31)' 같은 설명
+function repeatLabel(ev) {
+  const r = ev.repeat || 'none';
+  if (r === 'none') return '';
+  const n = Math.max(1, Number(ev.repeatEvery) || 1);
+  const unit = { daily: '일', weekly: '주', monthly: '개월', yearly: '년' }[r];
+  let s = n === 1 ? EVENT_REPEAT[r] : `${n}${unit}마다`;
+  if (r === 'weekly' && ev.repeatDays && ev.repeatDays.length) s += ` ${[...ev.repeatDays].map(Number).sort((x, y) => x - y).map((i) => WD[i]).join('·')}`;
+  if (ev.repeatUntil) { const u = parseYmd(ev.repeatUntil); s += ` (~${u.getMonth() + 1}/${u.getDate()})`; }
+  return s;
+}
+
+// 반복 설정 입력부 (메인 창 · 퀵 패널 · 휴대폰 공용). value()로 { repeat, repeatEvery, repeatDays, repeatUntil }
+function createRepeatEditor(root, ev = {}, getStartDate) {
+  root.classList.add('rp');
+  root.innerHTML = `
+    <div class="rp-line">
+      <select class="rp-kind">
+        <option value="none">반복 안 함</option>
+        <option value="daily">일 단위</option>
+        <option value="weekly">주 단위</option>
+        <option value="monthly">월 단위</option>
+        <option value="yearly">년 단위</option>
+      </select>
+      <span class="rp-every"><input type="number" class="rp-n" min="1" max="99" /><span class="rp-unit"></span>마다</span>
+    </div>
+    <div class="rp-days">${WD.map((w, i) => `<button type="button" data-wd="${i}">${w}</button>`).join('')}</div>
+    <label class="rp-until-l"><span>종료일</span><input type="date" class="rp-until" /><span class="rp-hint">비우면 계속</span></label>
+    <div class="rp-sum"></div>`;
+  const kind = root.querySelector('.rp-kind');
+  const num = root.querySelector('.rp-n');
+  const until = root.querySelector('.rp-until');
+  let days = new Set((ev.repeatDays || []).map(Number));
+  kind.value = ev.repeat && ev.repeat !== 'weekdays' ? ev.repeat : (ev.repeat === 'weekdays' ? 'weekly' : 'none');
+  if (ev.repeat === 'weekdays') days = new Set([1, 2, 3, 4, 5]);
+  num.value = String(Math.max(1, Number(ev.repeatEvery) || 1));
+  until.value = ev.repeatUntil || '';
+
+  const value = () => {
+    const r = kind.value;
+    if (r === 'none') return { repeat: 'none', repeatEvery: 1, repeatDays: [], repeatUntil: '' };
+    return {
+      repeat: r,
+      repeatEvery: Math.min(99, Math.max(1, Number(num.value) || 1)),
+      repeatDays: r === 'weekly' ? [...days].sort((x, y) => x - y) : [],
+      repeatUntil: until.value || '',
+    };
+  };
+  const paint = () => {
+    const r = kind.value;
+    root.classList.toggle('off', r === 'none');
+    root.querySelector('.rp-unit').textContent = { daily: '일', weekly: '주', monthly: '개월', yearly: '년' }[r] || '';
+    root.querySelector('.rp-days').classList.toggle('hidden', r !== 'weekly');
+    root.querySelectorAll('[data-wd]').forEach((b) => b.classList.toggle('on', days.has(Number(b.dataset.wd))));
+    const start = getStartDate ? getStartDate() : ev.date;
+    const label = repeatLabel({ ...value(), date: start });
+    root.querySelector('.rp-sum').textContent = r === 'none' ? '' : `🔁 ${label}${r === 'weekly' && !days.size && start ? ` (${WD[parseYmd(start).getDay()]}요일)` : ''}`;
+  };
+  kind.addEventListener('change', paint);
+  num.addEventListener('input', paint);
+  until.addEventListener('change', paint);
+  root.querySelectorAll('[data-wd]').forEach((b) => b.addEventListener('click', () => {
+    const d = Number(b.dataset.wd);
+    if (days.has(d)) days.delete(d); else days.add(d);
+    paint();
+  }));
+  paint();
+  return { value, refresh: paint };
+}
+
 
 // 날짜 d에 걸쳐 있는 회차의 시작일 (없으면 null)
 function evOccurrenceOn(ev, d) {
@@ -471,4 +551,14 @@ function evWhenLabel(ev) {
   const d = parseYmd(ev.date);
   const day = diff === 0 ? '오늘' : diff === 1 ? '내일' : diff === 2 ? '모레' : `${d.getMonth() + 1}/${d.getDate()}(${WD[d.getDay()]})`;
   return `${day} ${evTimeLabel(ev)}`;
+}
+
+// 방금 추가한 항목이 지금 화면 필터 때문에 안 보이면 그 이유 (보이면 '')
+function hiddenReason(item, kind) {
+  const v = viewSpace();
+  if (v !== 'all' && spaceOf(item) !== v) {
+    return `${SPACE_LABEL[spaceOf(item)]} 항목이라 지금 보기(${SPACE_LABEL[v]})에서는 안 보여요`;
+  }
+  if (kind === 'event' && !item.calendarId && hiddenCals().includes('me')) return '내 캘린더를 숨겨둔 상태라 안 보여요';
+  return '';
 }
